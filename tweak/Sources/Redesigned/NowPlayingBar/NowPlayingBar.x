@@ -16,8 +16,7 @@
 #import "NowPlayingBar.h"
 
 static const CGFloat kCardRadius = 24;
-static const CGFloat kHatGap = 4;
-static char kGlassKey, kHatGlassKey;
+static char kGlassKey;
 static __weak UIVisualEffectView *sg_cardGlass;
 static __weak UIView *sg_cardArtwork;
 
@@ -157,37 +156,41 @@ static void restyleCardContent(UIView *card) {
     });
 }
 
-// The hat gets a glass pane of its own, apart from the card's by a gap taken from the hat's side.
-static void styleHat(UIView *host, CGRect cardFrame) {
-    __block UIView *hat = nil;
-    SGForEachView(host, ^(UIView *v) {
-        if (!hat && isAttachment(v) && !v.hidden && v.alpha > 0 && v.bounds.size.height >= 20) hat = v;
-    });
-    UIVisualEffectView *glass = objc_getAssociatedObject(host, &kHatGlassKey);
-    if (!hat) {
-        glass.hidden = YES;
-        return;
-    }
-    CGRect frame = SGFrameIn(hat, host);
-    if (CGRectGetMidY(frame) < CGRectGetMidY(cardFrame)) {
-        frame.size.height = MIN(frame.size.height, CGRectGetMinY(cardFrame) - kHatGap - CGRectGetMinY(frame));
-    } else {
-        CGFloat top = MAX(CGRectGetMinY(frame), CGRectGetMaxY(cardFrame) + kHatGap);
-        frame.size.height = CGRectGetMaxY(frame) - top;
-        frame.origin.y = top;
-    }
-    if (frame.size.height < 20) {
-        glass.hidden = YES;
-        return;
-    }
-    glass = SGGlassFor(host, &kHatGlassKey);
-    glass.hidden = NO;
-    if (glass.overrideUserInterfaceStyle != UIUserInterfaceStyleDark) glass.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    glass.frame = frame;
-    SGShapeGlass(glass, MIN(kCardRadius, frame.size.height / 2), NO);
+static BOOL shownIn(UIView *view, UIView *root) {
+    for (UIView *v = view; v && v != root; v = v.superview) if (v.hidden || v.alpha == 0) return NO;
+    return YES;
+}
 
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{ SGLog(@"now playing hat %@ at %@, card at %@", hat.class, NSStringFromCGRect(frame), NSStringFromCGRect(cardFrame)); });
+// A hat and the card share one glass card, the hat its header row: two panes stacked with a gap read
+// as two bars, and the hat's pane was measured off the SwiftUI view mid-animation, 12 above where the
+// hat settles (trees/jam-now.txt: pane at y -12, hat at 0). The edge on the hat's side comes from the
+// bar instead, which Spotify grows by the hat's 44 (386x100 in a Jam, card at y 44) and whose changes
+// lay the container out again.
+static CGRect withHat(CGRect cardFrame, UIView *bar, UIView *host) {
+    __block UIView *hat = nil;
+    SGForEachView(bar, ^(UIView *v) {
+        if (!hat && isAttachment(v) && v.bounds.size.height >= 20 && shownIn(v, bar)) hat = v;
+    });
+    if (!hat) return cardFrame;
+    CGRect barFrame = SGFrameIn(bar, host), hatFrame = SGFrameIn(hat, host);
+    CGRect frame = cardFrame;
+    if (CGRectGetMidY(hatFrame) < CGRectGetMidY(cardFrame)) {
+        CGFloat top = MAX(CGRectGetMinY(barFrame), CGRectGetMinY(hatFrame));
+        if (top >= CGRectGetMinY(cardFrame)) return cardFrame;
+        frame.size.height = CGRectGetMaxY(cardFrame) - top;
+        frame.origin.y = top;
+    } else {
+        CGFloat bottom = MIN(CGRectGetMaxY(barFrame), CGRectGetMaxY(hatFrame));
+        if (bottom <= CGRectGetMaxY(cardFrame)) return cardFrame;
+        frame.size.height = bottom - CGRectGetMinY(cardFrame);
+    }
+
+    static NSUInteger logged;
+    if (logged++ < 2) {
+        SGLog(@"now playing hat %@ at %@ joins the card %@ as %@", hat.class, NSStringFromCGRect(hatFrame),
+              NSStringFromCGRect(cardFrame), NSStringFromCGRect(frame));
+    }
+    return frame;
 }
 
 static void styleNowPlayingBar(UIViewController *container) {
@@ -226,6 +229,7 @@ static void styleNowPlayingBar(UIViewController *container) {
         roundView(card, radius);
         restyleCardContent(card);
     }
+    frame = withHat(frame, bar, container.view);
 
     UIVisualEffectView *glass = SGGlassFor(container.view, &kGlassKey);
     // Dark whatever the system is set to: the bar is outside the navigation stacks Spotify makes dark, and
@@ -234,7 +238,6 @@ static void styleNowPlayingBar(UIViewController *container) {
     sg_cardGlass = glass;
     glass.frame = frame;
     SGShapeGlass(glass, radius, NO);
-    styleHat(container.view, frame);
 
     static dispatch_once_t once;
     dispatch_once(&once, ^{
